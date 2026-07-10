@@ -31,9 +31,9 @@
 
 ## 🌐 TLS, JA3 & Browser Fingerprinting
 
-MSP2 is fronted by **Cloudflare-style anti-bot protection** that inspects the TLS handshake (JA3 / JA4 fingerprint) and the HTTP/2 connection preface (Akamai fingerprint). A naïve `reqwest` or raw `hyper` client is blocked instantly.
+MSP2 sits behind **AWS CloudFront** (a CDN, not a WAF — there's no public evidence of aggressive JA3/Akamai-style anti-bot challenges). That said, the underlying services still expect traffic that *looks like* a real browser session: a modern TLS handshake, a sensible HTTP/2 preface, and consistent header/cookie behaviour. Sending a raw `hyper` or stock `reqwest` request is technically possible, but it stands out — unusual cipher suites, missing `Sec-CH-UA`, no cookie store, no automatic `User-Agent` rotation, etc.
 
-`msp-rust` solves this by using [`wreq`](https://github.com/0x676e67/wreq) + [`wreq-util`](https://github.com/0x676e67/wreq-util), which emulate the entire browser stack:
+`msp-rust` therefore uses [`wreq`](https://github.com/0x676e67/wreq) + [`wreq-util`](https://github.com/0x676e67/wreq-util) to emulate the full browser stack. Think of it as **defense-in-depth and traffic consistency**, not as a workaround for an active fingerprinting wall:
 
 | Layer            | What's emulated                                                                                  |
 | ---------------- | ------------------------------------------------------------------------------------------------ |
@@ -77,7 +77,7 @@ println!("profile  = {:?}", client.profile());   // Profile::Chrome128
 println!("platform = {:?}", client.platform());  // Platform::Windows
 ```
 
-> All profiles in the builder are recent enough to pass the cloudflare-style gate; older Chrome110/Edge builds are intentionally excluded to avoid being fingerprinted as "outdated browser".
+> All profiles in the builder are recent and secure; older Chrome110/Edge builds are intentionally excluded to avoid being fingerprinted as "outdated browser".
 
 ---
 
