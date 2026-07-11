@@ -1,258 +1,358 @@
-# 🪐 msp-rust
+# msp-rust
 
-> A high-performance, asynchronous Rust client for the **MovieStarPlanet 2** private API — built on `wreq` with full TLS/JA3/JA4 fingerprint emulation and strict Network Identity Isolation to guarantee stealth and account longevity.
+> An async, strongly typed Rust client for MovieStarPlanet 2 services, built for browser-grade HTTP behavior, structured sessions, and real-time events.
 
-[![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org)
-[![Edition](https://img.shields.io/badge/edition-2021-blue.svg)]()
-[![License](https://img.shields.io/badge/license-MIT-green.svg)]()
-[![Async](https://img.shields.io/badge/async-tokio-blueviolet.svg)](https://tokio.rs)
-[![HTTP](https://img.shields.io/badge/http-wreq-success.svg)](https://github.com/0x676e67/wreq)
+[![Rust](https://img.shields.io/badge/Rust-async-orange?logo=rust)](https://www.rust-lang.org/)
+[![Tokio](https://img.shields.io/badge/runtime-Tokio-2c3e50)](https://tokio.rs/)
+[![API](https://img.shields.io/badge/API-unofficial-yellow)](#disclaimer)
 
-`msp-rust` is an unofficial, reverse-engineered API wrapper for MovieStarPlanet 2 written in idiomatic Rust. It handles authentication, stable session serialization, proxy enforcement, real-time WebSocket events, GraphQL queries, room reservations, comments, and direct messaging — all with production-grade error handling, structured logging, and fingerprint-resistant transport.
+`msp-rust` provides one cohesive client for authentication, profiles, messaging, comments, greetings, rewards, UGC, room reservations, profile attributes, session persistence, and live presence events.
 
----
+## Why msp-rust?
 
-## ✨ Features
+Most API wrappers stop at sending JSON. `msp-rust` is designed around the behavior expected by the upstream services:
 
-- **Full Authentication Flow** — password grant, JWT decoding, profile resolution, refresh tokens
-- **Persistent Session Storage** — export and re-import the complete operational state (`SessionState`) across restarts to bypass password-grant flags
-- **Network Identity Isolation** — pin proxies to sessions with strict fail-fast constraints (`enforce_proxy`) preventing host IP leaks
-- **Smart Proxy Normalization** — supports native URI formatting and raw provider credentials (`host:port:user:pass`) automatically
-- **Asynchronous Event Hooks** — reactive broadcast stream (`tokio::sync::broadcast`) for real-time WebSocket events (messages, requests, rewards)
-- **Browser-Grade TLS / JA3 / JA4 Emulation** — dynamic user-agent, HTTP/2 frame settings, and TLS extensions mapping via `wreq-util`
-- **Randomized Platform & Browser Profiles** — Chrome and Firefox modern presets to prevent fingerprint tracking
-- **Fully Async & Thread-Safe** — built on Tokio with shared `Arc<RwLock>` session store
-- **Complete Messaging API** — direct 1:1 conversation initialization, paginated chat history, and unread trackers
+- **Browser-grade networking** — powered by `wreq` and `wreq-util` with selectable browser and platform emulation.
+- **TLS and JA3-aware profiles** — choose Chrome or Firefox profiles instead of relying on a generic Rust TLS fingerprint.
+- **One shared session** — access and refresh tokens, profile identity, region, device ID, and expiration are managed together.
+- **Strongly typed results** — common API responses are exposed as Rust models rather than unstructured JSON.
+- **Real-time events** — a Tokio broadcast event bus surfaces presence, relationship, reward, and message events.
+- **Proxy controls** — supports HTTP, HTTPS, SOCKS5, authenticated proxies, and optional proxy enforcement.
+- **Portable state** — export a session to JSON and restore it later with schema compatibility checks.
+- **Async by default** — all network operations integrate naturally with Tokio applications.
 
----
+## TLS, JA3, and browser emulation
 
-## 🌐 TLS, JA3 & Browser Fingerprinting
+Many services evaluate more than request headers. A connection can also expose its TLS ClientHello, cipher ordering, extensions, ALPN negotiation, HTTP/2 settings, and other transport characteristics. JA3 is a compact fingerprint derived from parts of the TLS ClientHello and is one signal among many.
 
-MSP2 sits behind **AWS CloudFront** (a CDN, not a WAF — there's no public evidence of aggressive JA3/Akamai-style anti-bot challenges). That said, the underlying services still expect traffic that *looks like* a real browser session: a modern TLS handshake, a sensible HTTP/2 preface, and consistent header/cookie behaviour. Sending a raw `hyper` or stock `reqwest` request stands out due to unusual cipher suites, missing `Sec-CH-UA` headers, and lack of automatic user-agent rotation.
-
-`msp-rust` uses [`wreq`](https://github.com/0x676e67/wreq) + [`wreq-util`](https://github.com/0x676e67/wreq-util) to emulate the full browser stack:
-
-| Layer         | What's emulated                                                                                  |
-| ------------- | ------------------------------------------------------------------------------------------------ |
-| **TLS**       | Cipher suites, extensions (ALPN, ECH, GREASE, …), supported groups, signature algorithms, curves |
-| **HTTP/2**    | Initial window size, header table size, max concurrent streams, frame ordering                   |
-| **JA3 / JA4** | Built-in browser presets match real Chrome / Firefox handshakes                                  |
-| **Headers**   | `User-Agent`, `Sec-CH-UA`, `Sec-Fetch-*`, `Accept-Language` are auto-injected per profile        |
-| **Cookies**   | Native cookie store enabled by default — `Set-Cookie` from login is automatically replayed      |
-
----
-
-## 🔌 Proxy Support & Network Isolation
-
-To guarantee stealth, `msp-rust` implements strict **Network Identity Isolation**. It ensures an account never leaks its host IP and maintains location stickiness.
-
-### Proxy Auto-Normalization
-
-The builder automatically normalizes both standard proxy URIs and standard proxy provider strings (e.g. `host:port:user:pass`) into standard HTTP/SOCKS5 proxies:
+`msp-rust` uses `wreq` plus `wreq-util` emulation profiles to make the HTTP stack behave more like a selected browser family:
 
 ```rust
+use msp_rust::MspClient;
+use wreq_util::{Platform, Profile};
+
 let client = MspClient::builder()
-    // Provider format: host:port:user:pass
-    .proxy("12.214.164.15:10000:user123:pass123")
-    .enforce_proxy(true) // Actively fails fast on proxy failure; prevents direct connection fallback
+    .profile(Profile::Chrome128)
+    .platform(Platform::Windows)
     .build()?;
 ```
 
----
+Available profiles in the current builder include Chrome 118, Chrome 124, Chrome 128, Firefox 117, and Firefox 128, paired with Windows, macOS, or Linux.
 
-## 💾 Persistent Session Storage
+> **Important:** JA3 similarity is not anonymity and is not a guarantee that traffic is indistinguishable from a real browser. IP reputation, request behavior, cookies, HTTP/2 details, timing, and application-level consistency can all matter. Use a browser profile and platform combination that remains coherent throughout a session.
 
-To avoid sending repeated `Password Grant` requests (which trigger brute-force or malicious login patterns), `msp-rust` allows you to export your entire session — including tokens, device parameters, and TLS profiles — and reload it instantly.
+## Features
+
+| Area | Capabilities |
+| --- | --- |
+| Authentication | Password grant, profile resolution, refresh grant, JWT claim parsing, silent refresh |
+| Sessions | Shared async store, expiry checks, JSON export and restore, schema versioning |
+| Browser emulation | Chrome and Firefox profiles, Windows/macOS/Linux platforms, randomized selection |
+| Proxies | HTTP, HTTPS, SOCKS5/SOCKS5H, authenticated proxy normalization, enforced proxy mode |
+| Profiles | Prefix search, game filtering, identity lookup |
+| Messaging | Find/create conversations, send messages, list conversations, unread IDs, history, mark read |
+| UGC | Fetch UGC metadata, comment count, decode BSON-backed status text from the CDN |
+| Comments | Post comments to UGC threads |
+| Greetings | Read greeting definitions and send greetings |
+| Rewards | Claim daily pickups, VIP pickups, inspect and claim profile collects |
+| Attributes | Read profile attributes and update individual `additionalData` keys |
+| Reservations | Reserve chatroom and quiz instances and derive Socket.IO URLs |
+| Events | Ping responses, relationship changes, passive rewards, sent messages, unknown event fallback |
+
+## Architecture
+
+```text
+MspClient
+├── wreq HTTP client (browser emulation + cookies + proxy)
+├── SessionStore (Arc<RwLock<Option<MspSession>>>)
+├── EventBus (Tokio broadcast channel)
+└── Endpoints
+    ├── auth
+    ├── profiles
+    ├── messaging
+    ├── ugcs / comments
+    ├── greetings / collects
+    ├── attributes
+    └── reservations
+```
+
+The endpoint accessors borrow the main client, so networking configuration, session state, and device identity remain consistent across operations.
+
+## Quick start
 
 ```rust
-use msp_client::{MspClient, SessionState, BrowserBrand};
-use std::fs;
-use std::path::Path;
+use msp_rust::MspClient;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let state_file = "session.json";
+async fn main() -> msp_rust::Result<()> {
+    let client = MspClient::builder().build()?;
 
-    let client = if Path::new(state_file).exists() {
-        // 1. Restore the session directly from disk
-        let json = fs::read_to_string(state_file)?;
-        let state = SessionState::from_json(&json)?;
+    let session = client
+        .auth()
+        .login("username", "password", "FR")
+        .await?;
 
-        let restored = MspClient::builder()
-            .from_state(state)
-            .build()?;
-
-        // 2. Perform a silent token refresh if near expiry
-        let session = restored.session().get().await?;
-        if session.is_expired() {
-            println!("[AUTH] Access token expired, performing silent refresh...");
-            restored.auth().refresh().await?;
-        }
-        restored
-    } else {
-        // 1. Create a fresh proxy-pinned client
-        let fresh = MspClient::builder()
-            .random_profile(BrowserBrand::Chrome)
-            .proxy("12.214.122.15:10000:user123:pass123")
-            .enforce_proxy(true)
-            .build()?;
-
-        fresh.auth().login("username", "password", "FR").await?;
-
-        // 2. Export state to file
-        if let Some(state) = fresh.export_state().await {
-            fs::write(state_file, state.to_json()?)?;
-        }
-        fresh
-    };
-
+    println!("Authenticated profile: {}", session.profile_id);
     Ok(())
 }
 ```
 
----
+## Client configuration
 
-## 📡 WebSocket Event Hooks
-
-You can subscribe to real-time server events via `client.events()`. Incoming Engine.IO WebSocket packets are automatically parsed into strongly-typed Rust structures.
+### Fixed browser profile and platform
 
 ```rust
-use msp_client::{MspClient, MspEvent};
+use msp_rust::MspClient;
+use wreq_util::{Platform, Profile};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = MspClient::builder().build()?; // Setup with credentials or state...
+let client = MspClient::builder()
+    .profile(Profile::Firefox128)
+    .platform(Platform::Linux)
+    .build()?;
+```
 
-    let mut rx = client.events();
-    tokio::spawn(async move {
-        while let Ok(event) = rx.recv().await {
-            match event {
-                MspEvent::PingResponse(p) => {
-                    println!("[HEARTBEAT] id={}", p.ping_id);
-                }
-                MspEvent::MessageSent(m) => {
-                    println!("[MESSAGE] {}: {}", m.sender_profile_id, m.message_body);
-                }
-                MspEvent::RelationshipRequestCreated(r) => {
-                    println!("[FRIEND_REQUEST] from={}", r.requester_profile_id);
-                }
-                MspEvent::RelationshipRequestChanged(e) => {
-                    println!("[RELATIONSHIP] {} -> {}", e.old_state, e.new_state);
-                }
-                MspEvent::PassiveRewardEarned(r) => {
-                    println!("[REWARD] +{} XP (source={:?})", r.xp, r.source_profile_id);
-                }
-                MspEvent::Unknown { message_type, .. } => {
-                    println!("[RAW_FRAME] type={message_type}");
-                }
-            }
+### Randomized profile selection
+
+```rust
+use msp_rust::{BrowserBrand, MspClient};
+
+let client = MspClient::builder()
+    .random_profile(BrowserBrand::Chrome)
+    .random_platform()
+    .build()?;
+```
+
+Randomization occurs when the client is built. The chosen profile and platform remain available through `client.profile()` and `client.platform()`.
+
+### Proxy support
+
+```rust
+use msp_rust::MspClient;
+
+let client = MspClient::builder()
+    .proxy("http://user:password@127.0.0.1:8080")
+    .enforce_proxy(true)
+    .build()?;
+```
+
+The builder also accepts compact `host:port:user:password` proxy strings and normalizes them to `http://user:password@host:port`. When `enforce_proxy(true)` is enabled, building without a proxy returns `MspError::InvalidProxy`.
+
+## Session persistence
+
+Export an authenticated session:
+
+```rust
+let state = client.export_state().await.expect("active session");
+std::fs::write("session.json", state.to_json()?)?;
+```
+
+Restore it later:
+
+```rust
+use msp_rust::{MspClient, SessionState};
+
+let json = std::fs::read_to_string("session.json")?;
+let state = SessionState::from_json(&json)?;
+
+if state.is_access_token_expired() {
+    eprintln!("The exported access token is expired; refresh after restoring.");
+}
+
+let client = MspClient::builder()
+    .from_state(state)
+    .build()?;
+```
+
+Session exports contain access and refresh tokens. Treat them like passwords: never commit them, log them, or share them.
+
+## Real-time events
+
+Authentication starts the presence WebSocket task. Subscribe before or after login and process typed events from the broadcast receiver:
+
+```rust
+use msp_rust::{MspClient, MspEvent};
+
+let client = MspClient::builder().build()?;
+let mut events = client.events();
+
+client.auth().login("username", "password", "FR").await?;
+
+while let Ok(event) = events.recv().await {
+    match event {
+        MspEvent::MessageSent(message) => {
+            println!("{}: {}", message.author, message.message_body);
         }
-    });
-
-    client.auth().login("username", "password", "FR").await?;
-    tokio::signal::ctrl_c().await?;
-    Ok(())
+        MspEvent::PassiveRewardEarned(reward) => {
+            println!("Earned {} XP", reward.xp);
+        }
+        MspEvent::Unknown { message_type, payload } => {
+            println!("Unknown event {message_type}: {payload}");
+        }
+        _ => {}
+    }
 }
 ```
 
----
+The event bus uses a bounded Tokio broadcast channel. Slow consumers should handle `RecvError::Lagged` according to their application requirements.
 
-## 📚 API Reference
+## Error handling
 
-### `MspClientBuilder`
+All public operations return `msp_rust::Result<T>`. Errors are grouped into actionable variants:
 
-| Method                                  | Description                                                                 |
-| --------------------------------------- | --------------------------------------------------------------------------- |
-| `device_id(id)`                         | Set a fixed device ID; otherwise a random uppercase UUIDv4 is generated     |
-| `profile(p)`                            | Pin a specific `wreq_util::Profile`                                         |
-| `platform(p)`                           | Pin a specific `wreq_util::Platform`                                        |
-| `random_platform()`                     | Pick OS uniformly at `build()` time                                         |
-| `random_profile(brand)`                 | Pick browser profile uniformly from a safe list of `BrowserBrand`          |
-| `proxy(url)`                            | Configures proxy. Supports `host:port:user:pass` strings                    |
-| `enforce_proxy(bool)`                   | Force fail-fast proxy safety; prevents IP leaks on network drops            |
-| `from_state(SessionState)`              | Restores client parameters and tokens dynamically from an exported state   |
-| `build()` → `Result<MspClient>`         | Build the client                                                           |
+- `Authentication` — authentication-specific failures
+- `NoSession` — an authenticated endpoint was called without a session
+- `Network` — HTTP transport failures from `wreq`
+- `Json` — serialization or response decoding failures
+- `Jwt` — malformed tokens or missing claims
+- `Api` — upstream protocol or HTTP errors
+- `Base64` / `UrlEncoded` — payload conversion failures
+- `InvalidProxy` — invalid or missing enforced proxy configuration
 
-### `MspClient`
+```rust
+use msp_rust::{MspClient, MspError};
 
-| Accessor            | Returns                              | Description                                              |
-| ------------------- | ------------------------------------ | -------------------------------------------------------- |
-| `auth()`            | `AuthEndpoint`                       | Login, token management, WebSocket presence control      |
-| `events()`          | `broadcast::Receiver<MspEvent>`      | Subscribe to real-time events                            |
-| `export_state()`    | `Option<SessionState>`               | Save active sessions                                     |
-| `messaging()`       | `MessagingEndpoint`                  | Direct messaging and historical parsing                  |
-| `greetings()`       | `GreetingsEndpoint`                  | System autographs and premium greetings                  |
-| `attributes()`      | `AttributesEndpoint`                 | Read and write game properties                           |
-| `comments()`        | `CommentsEndpoint`                   | Post and manage UGC comments                             |
-| `reservations()`    | `ReservationsEndpoint`              | Reserve chatroom / StarQuiz slots                        |
-| `session()`         | `&SessionStore`                      | Raw access to the token/identity store                   |
-| `profile()`         | `Profile`                            | Active browser emulation profile                         |
-| `platform()`        | `Platform`                           | Active OS emulation platform                             |
+match client.profiles().get_profile_identity("profile-id").await {
+    Ok(Some(profile)) => println!("Found {}", profile.name),
+    Ok(None) => println!("Profile not found"),
+    Err(MspError::NoSession) => eprintln!("Authenticate first"),
+    Err(MspError::Api { status, body }) => {
+        eprintln!("Upstream API error ({status}): {body}");
+    }
+    Err(error) => eprintln!("Request failed: {error}"),
+}
+```
 
-### `AuthEndpoint`
+## Security recommendations
 
-- `login(username, password, region) -> Result<MspSession>`: complete auth grant and start presence loop.
-- `refresh() -> Result<()>`: proactively rotates access tokens using stored refresh tokens.
+- Load account credentials from environment variables or a secret manager.
+- Never store exported sessions in source control.
+- Avoid printing access tokens, refresh tokens, passwords, or authenticated proxy URLs.
+- Use timeouts appropriate for your workload.
+- Use proxy enforcement when direct connections must never occur.
+- Respect service limits and avoid automated behavior that could affect other users.
 
-### `MessagingEndpoint`
+## Complete examples
 
-- `get_conversations(page, page_size) -> Result<ConversationPage>`: fetches list of active threads.
-- `get_chat_history(conversation_id, page_size) -> Result<Vec<ChatMessage>>`: reads historical chat frames.
-- `mark_conversation_as_read(conversation_id) -> Result<ConversationEntry>`: mark messages as read.
-- `get_or_create_conversation(other_profile_id) -> Result<Conversation>`: find or open a 1:1 thread.
-- `send_message(conversation_id, body) -> Result<MessageReceipt>`: send a chat message.
+The following focused examples cover the public endpoint groups. Each assumes an authenticated `client` unless login is shown.
 
-### `GreetingsEndpoint`
+### Profile search and identity
 
-- `get_greeting_definitions() -> Result<Vec<GreetingDefinition>>`: all greeting types with costs, cooldowns, XP formulas.
-- `send_greeting(greeting_type, profile_id) -> Result<SendGreetingResult>`: send a greeting (`Autograph`, `StarGreeting`, `LoveGreeting`, `RainbowGreeting`, `PartyGreeting`, `SuperStarGreeting`).
+```rust
+let results = client
+    .profiles()
+    .search_profiles("name", "FR", 1, 20, Some("j68d"))
+    .await?;
 
-### `AttributesEndpoint`
+for node in results.nodes {
+    if let Some(identity) = client
+        .profiles()
+        .get_profile_identity(&node.id)
+        .await?
+    {
+        println!("{} ({})", identity.name, identity.id);
+    }
+}
+```
 
-- `get(profile_id) -> Result<ProfileAttributes>`: fetch attributes (pass `None` for self).
-- `update_additional_data_key(key, value) -> Result<ProfileAttributes>`: read-modify-write a key in `additionalData`.
+### Messaging
 
-### `CommentsEndpoint`
+```rust
+let conversation = client
+    .messaging()
+    .get_or_create_conversation("other-profile-id")
+    .await?;
 
-- `post(thread_id, text) -> Result<SentComment>`: post a UGC comment.
+let receipt = client
+    .messaging()
+    .send_message(&conversation.conversation_id, "Hello from Rust!")
+    .await?;
 
-### `ReservationsEndpoint`
+println!("Sent at {}", receipt.timestamp);
 
-- `chatroom(level, version) -> Result<RoomReservation>`: reserve a chatroom slot.
-- `quiz() -> Result<RoomReservation>`: reserve a StarQuiz slot.
+let history = client
+    .messaging()
+    .get_chat_history(&conversation.conversation_id, 50)
+    .await?;
 
----
+client
+    .messaging()
+    .mark_conversation_as_read(&conversation.conversation_id)
+    .await?;
+```
 
-## 🧪 Error Handling
+### Profile attributes
 
-All endpoints return `Result<T, MspError>`. Variants:
+```rust
+let attributes = client.attributes().get(None).await?;
+println!("Avatar: {}", attributes.avatar_id);
 
-| Variant          | When                                                                                |
-| ---------------- | ----------------------------------------------------------------------------------- |
-| `Authentication` | Login / token rejection                                                             |
-| `NoSession`      | An endpoint was called before `login()` or after `clear()`                          |
-| `Network`        | `wreq` transport error                                                              |
-| `Json`           | `serde_json` decoding / encoding                                                    |
-| `Jwt`            | JWT layout or `sub` claim missing                                                   |
-| `Api`            | Server returned an error payload (`status`, `body`)                                |
-| `Base64`         | JWT base64 decoding                                                                 |
-| `UrlEncoded`     | `serde_urlencoded` failure                                                          |
-| `InvalidProxy`   | Proxy URL couldn't be parsed or was bypassed with `enforce_proxy` active            |
+let updated = client
+    .attributes()
+    .update_additional_data_key("exampleKey", serde_json::json!(true))
+    .await?;
 
----
+println!("Updated: {}", updated.additional_data);
+```
 
-## 🏎️ Performance Notes
+### UGC and comments
 
-The whole client is `Clone`-able: the HTTP engine is internally `Arc`'d, and `SessionStore` is `Arc<RwLock<…>>`. Spawn as many concurrent endpoint handles as you need.
+```rust
+if let Some(ugc) = client.ugcs().get_ugc_by_id("ugc-id").await? {
+    println!("UGC type: {}", ugc.ugc_type);
+    println!("Comments: {}", client.ugcs().get_comments_count(&ugc.id).await?);
 
-`Cargo.toml` is optimized for automation:
+    if let Some(status) = client.ugcs().get_status_text(&ugc.id).await? {
+        println!("Status: {status}");
+    }
 
-- **Dev** — optimized dependencies for rapid testing cycles.
-- **Release** — full Link-Time Optimization (`lto = "thin"`) enabled.
-- **Production** — `lto = "fat"`, `codegen-units = 1`, `panic = "abort"` for shipped binaries.
+    let comment = client.comments().post(&ugc.id, "Great post!").await?;
+    println!("Created comment {}", comment.comment_id);
+}
+```
 
----
+### Greetings
 
-## ⚠️ Disclaimer
+```rust
+let definitions = client.greetings().get_greeting_definitions().await?;
 
-This project is an **unofficial**, reverse-engineered client for the MovieStarPlanet 2 private API. It is provided for **educational and research purposes only**. Using it may violate the MSP2 Terms of Service and could result in account sanctions. The authors take no responsibility for any consequences arising from its use.
+if let Some(greeting) = definitions.first() {
+    let result = client
+        .greetings()
+        .send_greeting(&greeting.greeting_type, "receiver-profile-id")
+        .await?;
+
+    println!("Greeting sent: {}", result.success);
+}
+```
+
+### Daily rewards and collects
+
+```rust
+client.collects().collect_pickup().await?;
+
+let available = client.collects().get_collects().await?;
+let collect_types: Vec<&str> = available
+    .iter()
+    .map(|collect| collect.collect_type.as_str())
+    .collect();
+
+if !collect_types.is_empty() {
+    let claimed = client.collects().claim_collects(&collect_types).await?;
+    println!("Claimed {} collect groups", claimed.len());
+}
+```
+
+### Room reservations
+
+```rust
+let room = client.reservations().chatroom("level-id", "version").await?;
+println!("Room ID: {}", room.room_id);
+println!("Socket URL: {}", room.socket_url);
+
+let quiz = client.reservations().quiz().await?;
+println!("Quiz room: {}", quiz.room_id);
+```
+
+## Disclaimer
+
+This is an independent, unofficial project and is not affiliated with, endorsed by, or sponsored by MovieStarPlanet. Upstream endpoints can change without notice. You are responsible for complying with applicable terms, laws, account rules, and rate limits. Use the library only with accounts and data you are authorized to access.
